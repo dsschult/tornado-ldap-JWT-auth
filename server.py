@@ -11,10 +11,13 @@ import tornado.web
 from tornado.httpclient import HTTPError
 
 import jwt
+import ldap3
 
 class BaseHandler(tornado.web.RequestHandler):
-    def initialize(self, secret):
+    def initialize(self, secret, ldap_uri, ldap_base):
         self.secret = secret
+        self.ldap_uri = ldap_uri
+        self.ldap_base = ldap_base
 
 def auth_rpc(func):
     @wraps(func)
@@ -46,15 +49,33 @@ class LoginHandler(BaseHandler):
     """Login page for humans"""
     def get(self):
         self.write('<html><body><form action="/login" method="post">'
-                   'Name: <input type="text" name="name">'
+                   'Username: <input type="text" name="name"><br>'
+                   'Password: <input type="password" name="password"><br>'
                    '<input type="submit" value="Sign in">'
                    +self.xsrf_form_html()+
                    '</form></body></html>')
 
     def post(self):
-        token = jwt.encode({'user':self.get_argument("name")}, self.secret, algorithm='HS256')
-        self.set_secure_cookie('token', token)
-        self.redirect("/")
+        username = self.get_argument("name")
+        password = self.get_argument("password")
+        try:
+            # will fail if invalid
+            conn = ldap3.Connection(self.ldap_uri, 'uid={},{}'.format(username, self.ldap_base),
+                                    password, auto_bind=True)
+        except Exception:
+            self.write('<html><body><p style="color:red">Username or password invalid!</p>'
+                       '<form action="/login" method="post">'
+                       'Username: <input type="text" name="name"><br>'
+                       'Password: <input type="password" name="password"><br>'
+                       '<input type="submit" value="Sign in">'
+                       +self.xsrf_form_html()+
+                       '</form></body></html>')
+
+        else:
+            # successful login
+            token = jwt.encode({'user':username}, self.secret, algorithm='HS256')
+            self.set_secure_cookie('token', token)
+            self.redirect("/")
 
 class MainHandler(BaseHandler):
     """For human requests, use secure cookies"""
@@ -80,6 +101,8 @@ def main():
     }
     handler_settings = {
         'secret': 'secret',
+        'ldap_uri': 'ldaps://ldap-1.icecube.wisc.edu',
+        'ldap_base': 'ou=People,dc=icecube,dc=wisc,dc=edu',
     }
     app = tornado.web.Application([
         (r'/rpc', RPCHandler, handler_settings),
